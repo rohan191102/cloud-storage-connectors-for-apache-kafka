@@ -56,7 +56,8 @@ public final class AzureBlobSinkTask extends SinkTask {
     private AzureBlobSinkConfig config;
     private BlobContainerClient containerClient;
     private final Map<String, BlockBlobClient> blobClientMap = new ConcurrentHashMap<>();
-    private static final int NUMBER_OF_RECORDS_PER_FLUSH = 100;
+    // private static final int NUMBER_OF_RECORDS_PER_FLUSH = 100;
+    private static final int SIZE_OF_BYTES_PER_FLUSH = 90;
     // required by Connect
     public AzureBlobSinkTask() {
         super();
@@ -124,18 +125,83 @@ public final class AzureBlobSinkTask extends SinkTask {
         }
     }
 
-    @Override
-    public void flush(final Map<TopicPartition, OffsetAndMetadata> currentOffsets) {
+    // @Override // flush function based on size
+    // public void flush(final Map<TopicPartition, OffsetAndMetadata> currentOffsets) {
 
+    // final Map<String, List<SinkRecord>> groupedRecords = recordGrouper.records();
+
+    // LOG.debug("FLUSH called");
+
+    // for (final Map.Entry<String, List<SinkRecord>> entry : groupedRecords.entrySet()) {
+    // final String filename = entry.getKey();
+    // final List<SinkRecord> records = entry.getValue();
+    // int totalBytes = 0;
+    // for (final SinkRecord record : records) {
+    // totalBytes += record.toString().getBytes(StandardCharsets.UTF_8).length;
+    // LOG.debug("Total bytes: {}", totalBytes);
+    // }
+
+    // if (totalBytes >= SIZE_OF_BYTES_PER_FLUSH) {
+    // flushFile(filename, records);
+    // recordGrouper.clear();
+    // totalBytes = 0;
+    // }
+    // }
+    // }
+
+    // @Override // flush function based on number of records
+    // public void flush(final Map<TopicPartition, OffsetAndMetadata> currentOffsets) {
+
+    //     final Map<String, List<SinkRecord>> groupedRecords = recordGrouper.records();
+
+    //     for (final Map.Entry<String, List<SinkRecord>> entry : groupedRecords.entrySet()) {
+    //         final String filename = entry.getKey();
+    //         final List<SinkRecord> records = entry.getValue();
+
+    //         if (records.size() >= NUMBER_OF_RECORDS_PER_FLUSH) {
+    //             flushFile(filename, records);
+    //             recordGrouper.clear();
+    //         }
+    //     }
+    // }
+
+
+
+    @Override
+    public void flush(final Map<TopicPartition, OffsetAndMetadata> currentOffsets) { // from AI based on the size of the blob
         final Map<String, List<SinkRecord>> groupedRecords = recordGrouper.records();
+        LOG.debug("FLUSH called");
 
         for (final Map.Entry<String, List<SinkRecord>> entry : groupedRecords.entrySet()) {
             final String filename = entry.getKey();
             final List<SinkRecord> records = entry.getValue();
 
-            if (records.size() >= NUMBER_OF_RECORDS_PER_FLUSH) {
+            // Estimate the actual size of what will be written
+            int totalBytes;
+            try (var dummyOut = new java.io.ByteArrayOutputStream();
+                    var outputWriter = OutputWriter.builder()
+                            .withCompressionType(config.getCompressionType())
+                            .withExternalProperties(config.originalsStrings())
+                            .withOutputFields(config.getOutputFields())
+                            .withEnvelopeEnabled(config.envelopeEnabled())
+                            .build(dummyOut, config.getFormatType())) {
+
+                outputWriter.writeRecords(records);
+                totalBytes = dummyOut.size();
+                LOG.debug("Estimated total bytes for blob {} is {}", filename, totalBytes);
+
+            } catch (IOException e) {
+                LOG.error("Error estimating blob size for file {}: {}", filename, e.getMessage());
+                throw new ConnectException("Failed to estimate blob size", e);
+            }
+
+            if (totalBytes >= SIZE_OF_BYTES_PER_FLUSH) {
+                LOG.debug("Threshold exceeded, flushing file: {}", filename);
                 flushFile(filename, records);
                 recordGrouper.clear();
+            } else {
+                LOG.debug("Threshold not met ({} bytes < {}), skipping flush for: {}", totalBytes,
+                        SIZE_OF_BYTES_PER_FLUSH, filename);
             }
         }
     }
