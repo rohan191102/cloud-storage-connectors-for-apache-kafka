@@ -56,7 +56,7 @@ public final class AzureBlobSinkTask extends SinkTask {
     private AzureBlobSinkConfig config;
     private BlobContainerClient containerClient;
     private final Map<String, BlockBlobClient> blobClientMap = new ConcurrentHashMap<>();
-
+    private static final int NUMBER_OF_RECORDS_PER_FLUSH = 100;
     // required by Connect
     public AzureBlobSinkTask() {
         super();
@@ -126,10 +126,17 @@ public final class AzureBlobSinkTask extends SinkTask {
 
     @Override
     public void flush(final Map<TopicPartition, OffsetAndMetadata> currentOffsets) {
-        try {
-            recordGrouper.records().forEach(this::flushFile);
-        } finally {
-            recordGrouper.clear();
+
+        final Map<String, List<SinkRecord>> groupedRecords = recordGrouper.records();
+
+        for (final Map.Entry<String, List<SinkRecord>> entry : groupedRecords.entrySet()) {
+            final String filename = entry.getKey();
+            final List<SinkRecord> records = entry.getValue();
+
+            if (records.size() >= NUMBER_OF_RECORDS_PER_FLUSH) {
+                flushFile(filename, records);
+                recordGrouper.clear();
+            }
         }
     }
 
